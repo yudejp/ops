@@ -1,7 +1,0 @@
-services:
-  ntp:
-    image: dockurr/chrony
-    environment:
-      NTP_SERVERS: "time.cloudflare.com"
-    network_mode: host
-    restart: always
