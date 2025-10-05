@@ -1,0 +1,24 @@
+- name: 基本設定
+  hosts: "*"
+  become: yes
+  tasks:
+    - name: systemd-resolved を無効化し、停止する
+      ansible.builtin.systemd:
+        name: systemd-resolved
+        enabled: no
+        state: stopped
+
+    - name: /etc/resolv.conf にシンボリックリンクがあれば削除する
+      ansible.builtin.file:
+        path: /etc/resolv.conf
+        state: absent
+        force: yes
+
+    - name: キャッシュ DNS サーバの宛先を 127.0.0.1 (CoreDNS) に向ける
+      ansible.builtin.copy:
+        dest: /etc/resolv.conf
+        content: |
+          nameserver 127.0.0.1
+        owner: root
+        group: root
+        mode: '0644'
