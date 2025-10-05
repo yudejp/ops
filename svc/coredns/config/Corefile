@@ -1,0 +1,13 @@
+. {
+    log
+    errors
+    reload
+    whoami
+    prometheus
+    
+    hosts /etc/coredns/hosts {
+         fallthrough
+    }
+    
+    forward . 1.1.1.1
+}

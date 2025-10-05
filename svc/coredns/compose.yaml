@@ -1,0 +1,10 @@
+services:
+  coredns:
+    image: coredns/coredns:1.12.4
+    restart: always
+    ports:
+      - '53:53'
+      - '53:53/udp'
+    volumes:
+      - './config:/etc/coredns'
+    command: -conf /etc/coredns/Corefile
