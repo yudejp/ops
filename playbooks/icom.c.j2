@@ -1,0 +1,117 @@
+#
+# icom.c is originally made by KusaReMKN <mkn@kusaremkn.com>
+#
+# MIT License
+#
+# Copyright (c) 2025 KusaReMKN, et al.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF```
+# This file is provided under a permissive license.
+# Copyright (c) 2025 KusaReMKN, et al.
+#
+
+
+#include <linux/types.h>
+#include <linux/bpf.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/in.h>
+#include <linux/udp.h>
+#include <bpf/bpf_helpers.h>
+
+char __license[] SEC("license") = "Dual MIT/GPL";
+
+/*
+ * IPv4 アドレスを構成するためのヘルパマクロ
+ */
+#define IPv4_ADDR(a, b, c, d) \
+	(((((((__be32)(a) << 8) | (b)) << 8) | (c)) << 8) | (d))
+
+/*
+ * ペイロードのうち、\r\nSP の SP のインデクスを返す。
+ * 見付からなければ -1 を返す。
+ */
+static int
+findCRLFSP(void const *payload, void const *data_end)
+{
+	int state = 0;
+	for (int i = 0; payload + i < data_end && i < 1024; i++) {
+		/* \r\n を探す */
+		if (*(char *)(payload + i) == "\r\n "[state])
+			state++;
+		else
+			state = 0;
+		if (state == 3)
+			return i;
+	}
+	return -1;
+}
+
+int SEC("prog")
+icom(struct xdp_md *ctx)
+{
+	void * const data = (void *)(long)ctx->data;
+	void * const data_end = (void *)(long)ctx->data_end;
+
+	struct ethhdr * const eth = data;
+	if ((void *)(eth + 1) > data_end)
+		return XDP_PASS;
+
+	struct iphdr * const ip = (struct iphdr *)(eth + 1);
+	if ((void *)(ip + 1) > data_end)
+		return XDP_PASS;
+
+	if (ip->protocol != IPPROTO_UDP)
+		return XDP_PASS;
+
+	struct udphdr * const udp = (struct udphdr *)(ip + 1);
+	if ((void *)(udp + 1) > data_end)
+		return XDP_PASS;
+
+	/* 関係ない差出人だったら何もしない（ホストオーダ） */
+	// saddr_list の内容に基づいてフィルタリングロジックを動的に生成
+{% if saddr_list is defined and saddr_list | length > 0 %}
+	if (
+	{% for saddr in saddr_list %}
+		ip->saddr != __constant_htonl(IPv4_ADDR({{ saddr }}))
+		{%- if not loop.last %} && {%- endif %}
+	{% endfor %}
+	) {
+		return XDP_PASS;
+	}
+{% endif %}
+
+	/* 関係ないポート宛だったら何もしない（ホストオーダ） */
+#define DESTPORT	{{ destport | default(5060) }}
+	if (udp->dest != __constant_htons(DESTPORT))
+		return XDP_PASS;
+
+	/*
+	 * とりあえずヘッダ行を連結してみる。
+	 */
+	void * const payload = (void *)(udp + 1);
+	int spindex = findCRLFSP(payload, data_end);
+	if (spindex < 0)
+		return XDP_PASS;
+	*(char *)(payload + spindex - 2) = ',';
+	*(char *)(payload + spindex - 1) = ' ';
+
+	/* チェックサムをポイする */
+	udp->check = 0;
+
+	return XDP_PASS;
+}

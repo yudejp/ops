@@ -2,6 +2,117 @@
   hosts: "*"
   become: yes
   tasks:
+    - name: すべてのパッケージを最新にする
+      ansible.builtin.apt:
+        name: "*"
+        state: latest
+
+- name: kusaremkn/icom を導入する (事前準備)
+  hosts: "*"
+  become: yes
+  vars:
+    iface: eth0
+    icom_dir: /opt/icom
+    templated_c_source_path: "{{ icom_dir }}/icom_generated.c"
+    bpf_object_path: "{{ icom_dir }}/icom.o"
+    saddr_list:
+      - "192, 168, 30, 209"
+      - "192, 168, 30, 210"
+    destport: 5060
+    build_packages:
+      - clang
+      - llvm
+      - libelf-dev
+      - libbpf-dev
+    state: present
+  tasks:
+    - name: /opt/icom ディレクトリの中身を削除
+      ansible.builtin.file:
+        path: /opt/icom
+        state: absent
+
+    - name: icom 向けディレクトリの作成
+      file:
+        path: "/opt/icom"
+        state: directory
+        owner: "root"
+        group: "root"
+        mode: "775"
+
+    - name: apt で必要なパッケージをインストールする
+      package:
+        name: "{{ build_packages }}"
+        state: present
+      ignore_errors: yes
+
+    - name: C ソースコードをテンプレートから生成する
+      ansible.builtin.template:
+        src: icom.c.j2
+        dest: "{{ templated_c_source_path }}"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: 生成した C ソースコードをBPFオブジェクトとしてコンパイルする
+      ansible.builtin.command:
+        cmd: clang -O2 -g -target bpf -c {{ templated_c_source_path }} -o {{ bpf_object_path }} -I/usr/include/x86_64-linux-gnu/
+      args:
+        chdir: "{{ icom_dir }}"
+      changed_when: true
+
+    - name: 既存のXDPプログラムをデタッチする (冪等性のため)
+      ansible.builtin.command:
+        cmd: ip link set dev {{ iface }} xdp off
+      register: detach_result
+      changed_when: "'Error' not in detach_result.stderr and detach_result.rc == 0"
+      failed_when: "'Error' in detach_result.stderr and 'No XDP program attached' not in detach_result.stderr"
+
+    - name: コンパイルしたBPFプログラムをネットワークインターフェースにアタッチする
+      ansible.builtin.command:
+        cmd: ip link set dev {{ iface }} xdp obj {{ bpf_object_path }} sec prog
+      changed_when: true
+    
+    - name: 各 obj に対応する systemd ユニットを配置・有効化
+      become: true
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/icom-xdp-{{ iface }}.service"
+        content: |
+          [Unit]
+          Description=Attach icom XDP program for {{ iface }}
+          After=network-pre.target
+          Wants=network-pre.target
+          Before=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStartPre=/bin/sh -c 'ip -details link show {{ iface }} | grep -q "prog/xdp" && ip link set {{ iface }} xdp off || true'
+          ExecStart=/usr/sbin/ip link set {{ iface }} xdp obj {{ bpf_object_path }}
+          ExecStop=/usr/sbin/ip link set {{ iface }} xdp off
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+        owner: root
+        group: root
+        mode: '0644'
+    
+    - name: systemd ユニットファイルを再読み込み
+      become: true
+      ansible.builtin.command:
+        cmd: systemctl daemon-reload
+      changed_when: false
+
+    - name: 各 XDP サービスを有効化・起動
+      become: true
+      ansible.builtin.systemd:
+        name: "icom-xdp-{{ iface }}"
+        enabled: yes
+        state: started
+
+- name: スタブリゾルバを無効化して coredns で名前解決する
+  hosts: "*"
+  become: yes
+  tasks:
     - name: systemd-resolved を無効化し、停止する
       ansible.builtin.systemd:
         name: systemd-resolved
