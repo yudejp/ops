@@ -7,7 +7,7 @@
         name: "*"
         state: latest
 
-- name: kusaremkn/icom を導入する (事前準備)
+- name: kusaremkn/icom を導入する
   hosts: "*"
   become: yes
   vars:
