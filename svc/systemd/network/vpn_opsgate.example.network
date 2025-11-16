@@ -1,0 +1,6 @@
+[Match]
+Name=vpn_opsgate
+
+[Network]
+Address=192.168.30.218/24
+LinkLocalAddressing=no
